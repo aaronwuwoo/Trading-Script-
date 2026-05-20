@@ -1,0 +1,109 @@
+//@version=6
+indicator("CVD + Divergence", "CVD Div", overlay=false,
+     max_labels_count=200, max_lines_count=200)
+
+// =========== INPUTS ===========
+gC = "CVD"
+anchorMode = input.string("Daily", "Anchor",
+     options=["Daily", "Session", "None"], group=gC)
+sess = input.session("0930-1600", "Session (if anchored)", group=gC)
+
+gD = "Divergence"
+leftBars    = input.int(5, "Pivot left",  1, 50, group=gD)
+rightBars   = input.int(2, "Pivot right", 1, 20, group=gD)
+maxLookback = input.int(30, "Max bars between pivots", 5, 100, group=gD,
+     tooltip="Don't compare pivots farther apart than this")
+
+gV = "Visuals"
+showLabels = input.bool(true, "Labels on price",          group=gV)
+showLines  = input.bool(true, "Connecting lines on CVD",   group=gV)
+
+// =========== CVD CALCULATION ===========
+rng = high - low
+delta = rng > 0 ? volume * ((close - low) - (high - close)) / rng : 0.0
+
+newSession = false
+if anchorMode == "Daily"
+    newSession := ta.change(time("D")) != 0
+else if anchorMode == "Session"
+    inSess = not na(time(timeframe.period, sess))
+    newSession := inSess and not inSess[1]
+
+var float cvd = 0.0
+if newSession
+    cvd := delta
+else
+    cvd := cvd + delta
+
+cvdColor = cvd >= 0 ? color.new(color.green, 30) : color.new(color.red, 30)
+plot(cvd, "CVD", color=cvdColor, style=plot.style_columns)
+hline(0, "Zero", color=color.gray, linestyle=hline.style_dotted)
+
+// =========== PIVOT TRACKING ===========
+ph = ta.pivothigh(high, leftBars, rightBars)
+pl = ta.pivotlow(low,   leftBars, rightBars)
+
+var float lastPH    = na
+var float prevPH    = na
+var int   lastPHbar = na
+var int   prevPHbar = na
+var float lastPHcvd = na
+var float prevPHcvd = na
+
+var float lastPL    = na
+var float prevPL    = na
+var int   lastPLbar = na
+var int   prevPLbar = na
+var float lastPLcvd = na
+var float prevPLcvd = na
+
+if not na(ph)
+    prevPH    := lastPH
+    prevPHbar := lastPHbar
+    prevPHcvd := lastPHcvd
+    lastPH    := ph
+    lastPHbar := bar_index - rightBars
+    lastPHcvd := cvd[rightBars]
+
+if not na(pl)
+    prevPL    := lastPL
+    prevPLbar := lastPLbar
+    prevPLcvd := lastPLcvd
+    lastPL    := pl
+    lastPLbar := bar_index - rightBars
+    lastPLcvd := cvd[rightBars]
+
+// =========== DIVERGENCE DETECTION ===========
+bearDiv = (not na(ph)) and (not na(prevPH)) and
+     lastPH > prevPH and lastPHcvd < prevPHcvd and
+     (lastPHbar - prevPHbar) <= maxLookback
+
+bullDiv = (not na(pl)) and (not na(prevPL)) and
+     lastPL < prevPL and lastPLcvd > prevPLcvd and
+     (lastPLbar - prevPLbar) <= maxLookback
+
+if bearDiv
+    if showLabels
+        label.new(lastPHbar, lastPH, "Bear Div",
+             color=color.new(color.red, 30), textcolor=color.white,
+             style=label.style_label_down, size=size.small,
+             force_overlay=true)
+    if showLines
+        line.new(prevPHbar, prevPHcvd, lastPHbar, lastPHcvd,
+             color=color.red, width=2)
+
+if bullDiv
+    if showLabels
+        label.new(lastPLbar, lastPL, "Bull Div",
+             color=color.new(color.green, 30), textcolor=color.white,
+             style=label.style_label_up, size=size.small,
+             force_overlay=true)
+    if showLines
+        line.new(prevPLbar, prevPLcvd, lastPLbar, lastPLcvd,
+             color=color.green, width=2)
+
+// =========== ALERTS ===========
+alertcondition(bearDiv, "Bearish CVD Divergence",
+     "Bearish CVD divergence (price HH, CVD LH)")
+alertcondition(bullDiv, "Bullish CVD Divergence",
+     "Bullish CVD divergence (price LL, CVD HL)")
