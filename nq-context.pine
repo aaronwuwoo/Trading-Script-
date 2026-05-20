@@ -1,0 +1,1168 @@
+//@version=6
+indicator("NQ Context", "NQ Ctx", overlay=true,
+     max_lines_count=500, max_boxes_count=500, max_labels_count=100,
+     max_bars_back=5000)
+
+// =========================== INPUTS ===========================
+g0 = "GAMMA — 0DTE (today's expiration)"
+gFlip0     = input.float(0.0, "0DTE Gamma flip",  group=g0)
+gCallWall0 = input.float(0.0, "0DTE Call Wall",   group=g0)
+gPutWall0  = input.float(0.0, "0DTE Put Wall",    group=g0)
+show0DTE   = input.bool(true, "Show 0DTE levels", group=g0)
+
+gW = "GAMMA — WEEKLY (this week's expirations)"
+gFlipW     = input.float(0.0, "Weekly Gamma flip",  group=gW)
+gCallWallW = input.float(0.0, "Weekly Call Wall",   group=gW)
+gPutWallW  = input.float(0.0, "Weekly Put Wall",    group=gW)
+showWeekly = input.bool(true, "Show Weekly levels", group=gW)
+
+gM = "GAMMA — MONTHLY (this month's expirations)"
+gFlipM      = input.float(0.0, "Monthly Gamma flip",  group=gM)
+gCallWallM  = input.float(0.0, "Monthly Call Wall",   group=gM)
+gPutWallM   = input.float(0.0, "Monthly Put Wall",    group=gM)
+showMonthly = input.bool(true, "Show Monthly levels", group=gM)
+
+gGT = "GAMMA TIMESTAMP & STALENESS"
+gammaUpdatedDate = input.time(timestamp("2026-04-29 09:00 -0400"),
+     "Gamma data 'last updated'", group=gGT)
+gammaWarnHrs  = input.int(8,  "Yellow warning after N hours",  1, 168, group=gGT)
+gammaStaleHrs = input.int(24, "Red 'STALE' after N hours",     1, 720, group=gGT)
+mergeThreshATR = input.float(0.4, "Label merge threshold (× ATR)", 0.1, 2.0, 0.05, group=gGT)
+
+gC = "Confluence Zones"
+zoneWidth = input.float(25.0, "Zone width (NQ pts)", 1.0, 100.0, group=gC)
+minLayers = input.int(2, "Min distinct layer types", 2, 6, group=gC)
+use100    = input.bool(true,  "100s",  group=gC, inline="p")
+use50     = input.bool(false, "50s",   group=gC, inline="p")
+useQQQ    = input.bool(true,  "QQQ $", group=gC, inline="p")
+autoRatio = input.bool(true, "Auto-compute NQ/QQQ ratio", group=gC)
+ratioMan  = input.float(41.5, "Manual ratio", 30.0, 60.0, 0.1, group=gC)
+
+gB = "Bias"
+showVWAP = input.bool(true, "Show VWAP", group=gB)
+
+gVP = "Volume Profile"
+showVPVR     = input.bool(true,  "Show session VPVR", group=gVP)
+vpvrBins     = input.int(30, "Bins", 10, 60, group=gVP)
+vpvrWidthBars = input.int(200, "Width", 10, 500, group=gVP)
+showVA       = input.bool(true,  "Show POC/VAH/VAL lines", group=gVP)
+showVALabels = input.bool(true,  "Show price labels", group=gVP)
+vaPercent    = input.float(0.70, "Value Area %", 0.50, 0.90, 0.01, group=gVP)
+
+gPD = "Previous Day Levels"
+showPDHL = input.bool(true, "Show PDH / PDL / PDC", group=gPD)
+
+gDT = "Day-Type Classification"
+showDayType  = input.bool(true, "Show day-type label", group=gDT)
+ibStart      = input.session("0930-1030", "IB window", group=gDT)
+ibNarrowATR  = input.float(0.6, "Narrow IB threshold (× ATR)", 0.2, 1.5, 0.05, group=gDT)
+ibWideATR    = input.float(1.0, "Wide IB threshold (× ATR)",   0.5, 2.5, 0.05, group=gDT)
+
+gT = "TRIGGERS — Setup Detection"
+showTriggers   = input.bool(true,  "Show entry triggers on chart", group=gT)
+showSetupScore = input.bool(true,  "Show setup score in diagnostics", group=gT)
+minScoreFire   = input.int(6, "Minimum score to fire trigger", 1, 10, group=gT)
+sweepTolATR    = input.float(0.15, "Sweep tolerance (× ATR)", 0.05, 0.5, 0.05, group=gT)
+levelProxATR   = input.float(0.25, "Near-level proximity (× ATR)", 0.05, 1.0, 0.05, group=gT)
+
+gTP = "TRIGGER PATTERNS — Toggle Each"
+useSweepReclaim = input.bool(true, "1. Sweep + Reclaim", group=gTP)
+useRejectWick   = input.bool(true, "2. Rejection Wick at Level", group=gTP)
+useTrendPullback = input.bool(true, "3. Trend Pullback to VWAP", group=gTP)
+useFailedBreakout = input.bool(true, "4. Failed Breakout", group=gTP)
+useVolClimax    = input.bool(true, "5. Volume Climax + Reversal", group=gTP)
+useCompressionBreak = input.bool(true, "6. Compression Break", group=gTP)
+
+gTPP = "TRIGGER PARAMETERS"
+wickRatio   = input.float(0.6,  "Min wick ratio for rejection", 0.3, 0.9, 0.05, group=gTPP)
+volClimaxMult = input.float(2.0, "Vol climax (× avg vol)", 1.5, 5.0, 0.1, group=gTPP)
+compressionBars = input.int(15, "Compression lookback (bars)", 5, 60, group=gTPP)
+compressionATR = input.float(0.5, "Compression threshold (× ATR)", 0.1, 2.0, 0.05, group=gTPP)
+trendBars   = input.int(10, "Trend confirmation (bars)", 5, 30, group=gTPP)
+
+gS = "Session"
+useRTH = input.bool(true, "RTH only", group=gS)
+sess   = input.session("0930-1600", "Session", group=gS)
+
+gD = "Display"
+showZones       = input.bool(true, "Show zones",         group=gD)
+showGammaLines  = input.bool(true, "Show gamma lines",   group=gD)
+showGammaLabels = input.bool(true, "Show gamma labels",  group=gD)
+showDiag        = input.bool(true, "Show diagnostics",   group=gD)
+showAlerts      = input.bool(true, "Enable alerts",      group=gD)
+
+// =========================== STATE ============================
+var map<int, float> currBins = map.new<int, float>()
+var map<int, float> prevBins = map.new<int, float>()
+var float prevPOC = na
+var float prevVAH = na
+var float prevVAL = na
+
+var array<float>  lvlPrice = array.new<float>()
+var array<string> lvlTag   = array.new<string>()
+var array<float> zCenter = array.new<float>()
+var array<float> zLow    = array.new<float>()
+var array<float> zHigh   = array.new<float>()
+var array<int>   zCount  = array.new<int>()
+var array<box> zonesActive = array.new<box>()
+
+var array<float> vpvrPrices  = array.new<float>()
+var array<float> vpvrVolumes = array.new<float>()
+var array<box>   vpvrBoxes   = array.new<box>()
+var line  vpvrPOCLine = na
+var line  vpvrVAHLine = na
+var line  vpvrVALLine = na
+var label vpvrPOCLbl  = na
+var label vpvrVAHLbl  = na
+var label vpvrVALLbl  = na
+var float sessHigh = na
+var float sessLow  = na
+var int   sessStartBar = na
+var float curPOC = na
+var float curVAH = na
+var float curVAL = na
+
+var array<label> gammaLabels = array.new<label>()
+
+var float ibHigh = na, var float ibLow = na
+var bool  ibDone = false
+var float ibAtOpenATR = na
+var line  ibHighLine = na, var line ibLowLine = na
+var label ibHighLbl = na, var label ibLowLbl = na
+var label dayTypeLbl = na
+var bool  ibBrokeUpEver = false, var bool ibBrokeDownEver = false
+
+var float pdh = na, var float pdl = na, var float pdc = na
+var float todayHigh = na, var float todayLow = na, var float todayClose = na
+var line  pdhLine = na, var line pdlLine = na, var line pdcLine = na
+var label pdhLbl = na, var label pdlLbl = na, var label pdcLbl = na
+
+var bool sweptVAH = false, var bool sweptVAL = false
+var bool sweptPDH = false, var bool sweptPDL = false
+var bool sweptIBH = false, var bool sweptIBL = false
+var int  sweptVAHBar = 0, var int sweptVALBar = 0
+var int  sweptPDHBar = 0, var int sweptPDLBar = 0
+var int  sweptIBHBar = 0, var int sweptIBLBar = 0
+
+// Failed breakout state
+var bool brokeAbovePDH = false, var int  brokeAbovePDHBar = 0
+var bool brokeBelowPDL = false, var int  brokeBelowPDLBar = 0
+var bool brokeAboveIBH = false, var int  brokeAboveIBHBar = 0
+var bool brokeBelowIBL = false, var int  brokeBelowIBLBar = 0
+
+delLbl(label l) =>
+    if not na(l)
+        label.delete(l)
+delLine(line ll) =>
+    if not na(ll)
+        line.delete(ll)
+
+newDay = ta.change(time("D")) != 0
+inRTH  = not na(time(timeframe.period, sess))
+inIB   = not na(time(timeframe.period, ibStart))
+
+// =========================== AUTO RATIO ===========================
+nqClose  = request.security("CME_MINI:NQ1!", timeframe.period, close, lookahead=barmerge.lookahead_off)
+qqqClose = request.security("NASDAQ:QQQ",    timeframe.period, close, lookahead=barmerge.lookahead_off)
+ratio    = autoRatio and not na(nqClose) and not na(qqqClose) and qqqClose > 0 ? nqClose / qqqClose : ratioMan
+
+// =========================== DAILY ATR ===========================
+dailyATR = request.security(syminfo.tickerid, "D", ta.atr(14), lookahead=barmerge.lookahead_off)
+
+// =========================== VOLUME PROFILE ACCUMULATION ===========================
+typPrice = (high + low + close) / 3.0
+binIdx   = int(math.round(typPrice / 5.0))
+existing = map.get(currBins, binIdx)
+map.put(currBins, binIdx, (na(existing) ? 0.0 : existing) + nz(volume))
+
+// =========================== BIAS ===========================
+[vwapVal, _u, _d] = ta.vwap(hlc3, newDay, 1.0)
+atrVal = ta.atr(14)
+avgVol = ta.sma(volume, 20)
+
+// =========================== TRACK SESSION + PDH/PDL/PDC ===========================
+if newDay
+    if not na(todayHigh)
+        pdh := todayHigh
+        pdl := todayLow
+        pdc := todayClose
+    todayHigh  := high
+    todayLow   := low
+    todayClose := close
+
+    sessHigh := high
+    sessLow  := low
+    sessStartBar := bar_index
+
+    ibHigh := na
+    ibLow  := na
+    ibDone := false
+    ibAtOpenATR := dailyATR
+    ibBrokeUpEver := false
+    ibBrokeDownEver := false
+
+    sweptVAH := false
+    sweptVAL := false
+    sweptPDH := false
+    sweptPDL := false
+    sweptIBH := false
+    sweptIBL := false
+
+    brokeAbovePDH := false
+    brokeBelowPDL := false
+    brokeAboveIBH := false
+    brokeBelowIBL := false
+else
+    if inRTH
+        todayHigh  := na(todayHigh) ? high : math.max(todayHigh, high)
+        todayLow   := na(todayLow)  ? low  : math.min(todayLow,  low)
+        todayClose := close
+    if not na(sessHigh)
+        sessHigh := math.max(sessHigh, high)
+    if not na(sessLow)
+        sessLow  := math.min(sessLow,  low)
+
+// =========================== INITIAL BALANCE ===========================
+if inIB
+    ibHigh := na(ibHigh) ? high : math.max(ibHigh, high)
+    ibLow  := na(ibLow)  ? low  : math.min(ibLow,  low)
+else if not ibDone and not na(ibHigh) and not na(ibLow)
+    ibDone := true
+
+if ibDone and not na(ibHigh) and high > ibHigh
+    ibBrokeUpEver := true
+if ibDone and not na(ibLow) and low < ibLow
+    ibBrokeDownEver := true
+
+// =========================== ON NEW DAY (CONFLUENCE ZONES) ===========================
+if newDay
+    map.clear(prevBins)
+    snapKeys = map.keys(currBins)
+    if array.size(snapKeys) > 0
+        for k in snapKeys
+            map.put(prevBins, k, map.get(currBins, k))
+    map.clear(currBins)
+
+    prevPOC := na
+    prevVAH := na
+    prevVAL := na
+    if map.size(prevBins) > 0
+        keys = map.keys(prevBins)
+        array.sort(keys)
+        nk = array.size(keys)
+        if nk > 0
+            maxV  = -1.0
+            pocK  = array.get(keys, 0)
+            total = 0.0
+            for i = 0 to nk - 1
+                kk = array.get(keys, i)
+                vv = map.get(prevBins, kk)
+                total := total + vv
+                if vv > maxV
+                    maxV := vv
+                    pocK := kk
+            target = total * 0.70
+            pocPos = array.indexof(keys, pocK)
+            loIdx  = pocPos
+            hiIdx  = pocPos
+            cum    = maxV
+            while cum < target and (loIdx > 0 or hiIdx < nk - 1)
+                upV = hiIdx < nk - 1 ? map.get(prevBins, array.get(keys, hiIdx + 1)) : -1.0
+                dnV = loIdx > 0      ? map.get(prevBins, array.get(keys, loIdx - 1)) : -1.0
+                if upV >= dnV and hiIdx < nk - 1
+                    hiIdx := hiIdx + 1
+                    cum   := cum + upV
+                else if loIdx > 0
+                    loIdx := loIdx - 1
+                    cum   := cum + dnV
+                else
+                    break
+            prevPOC := pocK * 5.0
+            prevVAH := array.get(keys, hiIdx) * 5.0
+            prevVAL := array.get(keys, loIdx) * 5.0
+
+    array.clear(lvlPrice)
+    array.clear(lvlTag)
+
+    if not na(prevPOC)
+        array.push(lvlPrice, prevPOC)
+        array.push(lvlTag, "POC")
+    if not na(prevVAH)
+        array.push(lvlPrice, prevVAH)
+        array.push(lvlTag, "VAH")
+    if not na(prevVAL)
+        array.push(lvlPrice, prevVAL)
+        array.push(lvlTag, "VAL")
+
+    refLo   = na(prevVAL) ? close : prevVAL
+    refHi   = na(prevVAH) ? close : prevVAH
+    rangeLo = math.min(refLo, close) - 200.0
+    rangeHi = math.max(refHi, close) + 200.0
+
+    if use100
+        float p1 = math.floor(rangeLo / 100.0) * 100.0
+        while p1 <= rangeHi
+            array.push(lvlPrice, p1)
+            array.push(lvlTag,   "P100")
+            p1 := p1 + 100.0
+    if use50
+        float p2 = math.floor(rangeLo / 50.0) * 50.0
+        while p2 <= rangeHi
+            if int(math.round(p2)) % 100 != 0
+                array.push(lvlPrice, p2)
+                array.push(lvlTag, "P50")
+            p2 := p2 + 50.0
+
+    if useQQQ
+        qLo = rangeLo / ratio
+        qHi = rangeHi / ratio
+        float qw = math.floor(qLo)
+        while qw <= qHi
+            nqEq = qw * ratio
+            if nqEq >= rangeLo and nqEq <= rangeHi
+                array.push(lvlPrice, nqEq)
+                array.push(lvlTag, "QQQ")
+            qw := qw + 1.0
+
+    nLvl = array.size(lvlPrice)
+
+    if nLvl > 1
+        for i = 0 to nLvl - 2
+            for j = 0 to nLvl - 2 - i
+                if array.get(lvlPrice, j) > array.get(lvlPrice, j + 1)
+                    tp = array.get(lvlPrice, j)
+                    tt = array.get(lvlTag,   j)
+                    array.set(lvlPrice, j,     array.get(lvlPrice, j + 1))
+                    array.set(lvlTag,   j,     array.get(lvlTag,   j + 1))
+                    array.set(lvlPrice, j + 1, tp)
+                    array.set(lvlTag,   j + 1, tt)
+
+    array.clear(zCenter)
+    array.clear(zLow)
+    array.clear(zHigh)
+    array.clear(zCount)
+
+    if nLvl > 0
+        cs = 0
+        for i = 1 to nLvl
+            isLast      = i == nLvl
+            startP      = array.get(lvlPrice, cs)
+            curP        = isLast ? startP : array.get(lvlPrice, i)
+            shouldClose = isLast or (curP - startP > zoneWidth)
+            if shouldClose
+                ce       = i - 1
+                seenTags = array.new<string>()
+                if ce >= cs
+                    for j = cs to ce
+                        t = array.get(lvlTag, j)
+                        if array.indexof(seenTags, t) == -1
+                            array.push(seenTags, t)
+                if array.size(seenTags) >= minLayers
+                    pSum = 0.0
+                    cnt_ = ce - cs + 1
+                    for j = cs to ce
+                        pSum := pSum + array.get(lvlPrice, j)
+                    array.push(zCenter, pSum / cnt_)
+                    array.push(zLow,    array.get(lvlPrice, cs))
+                    array.push(zHigh,   array.get(lvlPrice, ce))
+                    array.push(zCount,  array.size(seenTags))
+                cs := i
+
+    while array.size(zonesActive) > 0
+        box.delete(array.shift(zonesActive))
+
+    nZdraw = array.size(zCenter)
+    if showZones and nZdraw > 0
+        for i = 0 to nZdraw - 1
+            zlo_ = array.get(zLow,   i)
+            zhi_ = array.get(zHigh,  i)
+            cnt  = array.get(zCount, i)
+            col2 = cnt >= 4 ? color.new(color.green, 80) : color.new(color.aqua, 88)
+            bx = box.new(bar_index - 1, zhi_, bar_index, zlo_,
+                 bgcolor=col2, border_color=color.new(col2, 60), extend=extend.right)
+            array.push(zonesActive, bx)
+
+// =========================== VPVR RENDER ===========================
+curPOC := na
+curVAH := na
+curVAL := na
+
+if showVPVR and barstate.islast and not na(sessHigh) and not na(sessLow) and sessHigh > sessLow
+    while array.size(vpvrBoxes) > 0
+        box.delete(array.shift(vpvrBoxes))
+    delLine(vpvrPOCLine)
+    delLine(vpvrVAHLine)
+    delLine(vpvrVALLine)
+    delLbl(vpvrPOCLbl)
+    delLbl(vpvrVAHLbl)
+    delLbl(vpvrVALLbl)
+
+    binSize = (sessHigh - sessLow) / vpvrBins
+    array.clear(vpvrPrices)
+    array.clear(vpvrVolumes)
+
+    if binSize > 0
+        for b = 0 to vpvrBins - 1
+            array.push(vpvrPrices,  sessLow + (b + 0.5) * binSize)
+            array.push(vpvrVolumes, 0.0)
+
+        startB = na(sessStartBar) ? bar_index : sessStartBar
+        barsBack = math.min(bar_index - startB, 4000)
+        if barsBack > 0
+            for k = 0 to barsBack
+                tp = (high[k] + low[k] + close[k]) / 3.0
+                vk = nz(volume[k])
+                bIdx = int(math.floor((tp - sessLow) / binSize))
+                if bIdx >= 0 and bIdx < vpvrBins
+                    cur = array.get(vpvrVolumes, bIdx)
+                    array.set(vpvrVolumes, bIdx, cur + vk)
+
+        maxVol = 0.0
+        pocIdx = 0
+        totalVol = 0.0
+        for b = 0 to vpvrBins - 1
+            v = array.get(vpvrVolumes, b)
+            totalVol := totalVol + v
+            if v > maxVol
+                maxVol := v
+                pocIdx := b
+
+        vahIdx = pocIdx
+        valIdx = pocIdx
+        cumVA  = maxVol
+        targetVA = totalVol * vaPercent
+        while cumVA < targetVA and (valIdx > 0 or vahIdx < vpvrBins - 1)
+            upV2 = vahIdx < vpvrBins - 1 ? array.get(vpvrVolumes, vahIdx + 1) : -1.0
+            dnV2 = valIdx > 0            ? array.get(vpvrVolumes, valIdx - 1) : -1.0
+            if upV2 >= dnV2 and vahIdx < vpvrBins - 1
+                vahIdx := vahIdx + 1
+                cumVA  := cumVA + upV2
+            else if valIdx > 0
+                valIdx := valIdx - 1
+                cumVA  := cumVA + dnV2
+            else
+                break
+
+        if maxVol > 0
+            curPOC := array.get(vpvrPrices, pocIdx)
+            curVAH := sessLow + (vahIdx + 1) * binSize
+            curVAL := sessLow + valIdx * binSize
+
+            rightX = bar_index + vpvrWidthBars + 5
+            for b = 0 to vpvrBins - 1
+                v = array.get(vpvrVolumes, b)
+                if v > 0
+                    pLo = sessLow + b * binSize
+                    pHi = sessLow + (b + 1) * binSize
+                    barW = int(math.round((v / maxVol) * vpvrWidthBars))
+                    leftX = rightX - barW
+                    inVA = b >= valIdx and b <= vahIdx
+                    isPOC = b == pocIdx
+                    bxCol = isPOC ? color.new(color.yellow, 30) : (inVA ? color.new(color.aqua, 60) : color.new(color.gray, 75))
+                    bx = box.new(leftX, pHi, rightX, pLo,
+                         bgcolor=bxCol, border_color=color.new(bxCol, 50))
+                    array.push(vpvrBoxes, bx)
+
+            if showVA
+                vpvrPOCLine := line.new(sessStartBar, curPOC, bar_index, curPOC,
+                     color=color.yellow, width=2)
+                vpvrVAHLine := line.new(sessStartBar, curVAH, bar_index, curVAH,
+                     color=color.aqua, width=1, style=line.style_dashed)
+                vpvrVALLine := line.new(sessStartBar, curVAL, bar_index, curVAL,
+                     color=color.aqua, width=1, style=line.style_dashed)
+
+                if showVALabels
+                    labelX = bar_index + 2
+                    vpvrPOCLbl := label.new(labelX, curPOC,
+                         "POC " + str.tostring(curPOC, "#.##"),
+                         color=color.new(color.yellow, 20), textcolor=color.black,
+                         style=label.style_label_left, size=size.small)
+                    vpvrVAHLbl := label.new(labelX, curVAH,
+                         "VAH " + str.tostring(curVAH, "#.##"),
+                         color=color.new(color.aqua, 30), textcolor=color.white,
+                         style=label.style_label_left, size=size.small)
+                    vpvrVALLbl := label.new(labelX, curVAL,
+                         "VAL " + str.tostring(curVAL, "#.##"),
+                         color=color.new(color.aqua, 30), textcolor=color.white,
+                         style=label.style_label_left, size=size.small)
+
+// =========================== SWEEP DETECTION ===========================
+sweepTol = atrVal * sweepTolATR
+
+if not na(curVAH)
+    if not sweptVAH and high > curVAH + sweepTol
+        sweptVAH := true
+        sweptVAHBar := bar_index
+if not na(curVAL)
+    if not sweptVAL and low < curVAL - sweepTol
+        sweptVAL := true
+        sweptVALBar := bar_index
+if not na(pdh)
+    if not sweptPDH and high > pdh + sweepTol
+        sweptPDH := true
+        sweptPDHBar := bar_index
+if not na(pdl)
+    if not sweptPDL and low < pdl - sweepTol
+        sweptPDL := true
+        sweptPDLBar := bar_index
+if not na(ibHigh) and ibDone
+    if not sweptIBH and high > ibHigh + sweepTol
+        sweptIBH := true
+        sweptIBHBar := bar_index
+if not na(ibLow) and ibDone
+    if not sweptIBL and low < ibLow - sweepTol
+        sweptIBL := true
+        sweptIBLBar := bar_index
+
+// =========================== FAILED BREAKOUT TRACKING ===========================
+// Track when price breaks ABOVE level and stays for 2+ bars
+if not na(pdh) and close > pdh and close[1] > pdh and not brokeAbovePDH
+    brokeAbovePDH := true
+    brokeAbovePDHBar := bar_index
+if not na(pdl) and close < pdl and close[1] < pdl and not brokeBelowPDL
+    brokeBelowPDL := true
+    brokeBelowPDLBar := bar_index
+if ibDone and not na(ibHigh) and close > ibHigh and close[1] > ibHigh and not brokeAboveIBH
+    brokeAboveIBH := true
+    brokeAboveIBHBar := bar_index
+if ibDone and not na(ibLow) and close < ibLow and close[1] < ibLow and not brokeBelowIBL
+    brokeBelowIBL := true
+    brokeBelowIBLBar := bar_index
+
+// =========================== TRIGGER 1: SWEEP + RECLAIM ===========================
+barsSinceSweepVAH = bar_index - sweptVAHBar
+barsSinceSweepVAL = bar_index - sweptVALBar
+barsSinceSweepPDH = bar_index - sweptPDHBar
+barsSinceSweepPDL = bar_index - sweptPDLBar
+barsSinceSweepIBH = bar_index - sweptIBHBar
+barsSinceSweepIBL = bar_index - sweptIBLBar
+
+reclaimVAH = sweptVAH and barsSinceSweepVAH <= 3 and not na(curVAH) and close < curVAH and high[1] > curVAH
+reclaimVAL = sweptVAL and barsSinceSweepVAL <= 3 and not na(curVAL) and close > curVAL and low[1] < curVAL
+reclaimPDH = sweptPDH and barsSinceSweepPDH <= 3 and not na(pdh)    and close < pdh    and high[1] > pdh
+reclaimPDL = sweptPDL and barsSinceSweepPDL <= 3 and not na(pdl)    and close > pdl    and low[1] < pdl
+reclaimIBH = sweptIBH and barsSinceSweepIBH <= 3 and not na(ibHigh) and close < ibHigh and high[1] > ibHigh
+reclaimIBL = sweptIBL and barsSinceSweepIBL <= 3 and not na(ibLow)  and close > ibLow  and low[1] < ibLow
+
+shortSweep = useSweepReclaim and (reclaimVAH or reclaimPDH or reclaimIBH)
+longSweep  = useSweepReclaim and (reclaimVAL or reclaimPDL or reclaimIBL)
+
+// =========================== TRIGGER 2: REJECTION WICK AT LEVEL ===========================
+barRange  = high - low
+upperWick = high - math.max(open, close)
+lowerWick = math.min(open, close) - low
+upperWickRatio = barRange > 0 ? upperWick / barRange : 0.0
+lowerWickRatio = barRange > 0 ? lowerWick / barRange : 0.0
+
+// Find any level the wick poked into
+levelProx = atrVal * levelProxATR
+
+upperWickAtLevel = false
+if not na(curVAH) and high >= curVAH - levelProx and high <= curVAH + levelProx and high > math.max(open, close)
+    upperWickAtLevel := true
+if not na(pdh) and high >= pdh - levelProx and high <= pdh + levelProx and high > math.max(open, close)
+    upperWickAtLevel := true
+if gCallWall0 > 0 and high >= gCallWall0 - levelProx and high <= gCallWall0 + levelProx
+    upperWickAtLevel := true
+if gCallWallW > 0 and high >= gCallWallW - levelProx and high <= gCallWallW + levelProx
+    upperWickAtLevel := true
+
+lowerWickAtLevel = false
+if not na(curVAL) and low <= curVAL + levelProx and low >= curVAL - levelProx and low < math.min(open, close)
+    lowerWickAtLevel := true
+if not na(pdl) and low <= pdl + levelProx and low >= pdl - levelProx and low < math.min(open, close)
+    lowerWickAtLevel := true
+if gPutWall0 > 0 and low <= gPutWall0 + levelProx and low >= gPutWall0 - levelProx
+    lowerWickAtLevel := true
+if gPutWallW > 0 and low <= gPutWallW + levelProx and low >= gPutWallW - levelProx
+    lowerWickAtLevel := true
+
+shortWick = useRejectWick and upperWickAtLevel and upperWickRatio >= wickRatio and close < open
+longWick  = useRejectWick and lowerWickAtLevel and lowerWickRatio >= wickRatio and close > open
+
+// =========================== TRIGGER 3: TREND PULLBACK TO VWAP ===========================
+trendUp = close > ta.highest(high, trendBars)[1] - atrVal * 0.5 and close > vwapVal
+trendDn = close < ta.lowest(low, trendBars)[1] + atrVal * 0.5 and close < vwapVal
+
+pulledToVWAP = math.abs(close - vwapVal) <= atrVal * 0.3
+bullishCandle = close > open and (close - open) > barRange * 0.5
+bearishCandle = close < open and (open - close) > barRange * 0.5
+
+longPullback  = useTrendPullback and trendUp and pulledToVWAP and bullishCandle
+shortPullback = useTrendPullback and trendDn and pulledToVWAP and bearishCandle
+
+// =========================== TRIGGER 4: FAILED BREAKOUT ===========================
+barsSinceBreakPDH = bar_index - brokeAbovePDHBar
+barsSinceBreakPDL = bar_index - brokeBelowPDLBar
+barsSinceBreakIBH = bar_index - brokeAboveIBHBar
+barsSinceBreakIBL = bar_index - brokeBelowIBLBar
+
+failedBreakoutShort = useFailedBreakout and (
+     (brokeAbovePDH and barsSinceBreakPDH <= 5 and not na(pdh) and close < pdh - levelProx) or
+     (brokeAboveIBH and barsSinceBreakIBH <= 5 and not na(ibHigh) and close < ibHigh - levelProx))
+
+failedBreakoutLong = useFailedBreakout and (
+     (brokeBelowPDL and barsSinceBreakPDL <= 5 and not na(pdl) and close > pdl + levelProx) or
+     (brokeBelowIBL and barsSinceBreakIBL <= 5 and not na(ibLow) and close > ibLow + levelProx))
+
+// =========================== TRIGGER 5: VOLUME CLIMAX + REVERSAL ===========================
+volSpike = volume > avgVol * volClimaxMult
+prevVolSpike = volume[1] > avgVol[1] * volClimaxMult
+
+climaxShort = useVolClimax and prevVolSpike and close[1] > open[1] and close < open and close < close[1]
+climaxLong  = useVolClimax and prevVolSpike and close[1] < open[1] and close > open and close > close[1]
+
+// =========================== TRIGGER 6: COMPRESSION BREAK ===========================
+compressionHigh = ta.highest(high, compressionBars)[1]
+compressionLow  = ta.lowest(low, compressionBars)[1]
+compressionRange = compressionHigh - compressionLow
+isCompressed = compressionRange < atrVal * compressionATR
+
+bodyOK = math.abs(close - open) > barRange * 0.5
+compressionBreakLong  = useCompressionBreak and isCompressed and close > compressionHigh and bodyOK
+compressionBreakShort = useCompressionBreak and isCompressed and close < compressionLow  and bodyOK
+
+// =========================== SETUP SCORE ===========================
+primaryFlip = gFlip0 > 0 ? gFlip0 : (gFlipW > 0 ? gFlipW : gFlipM)
+aboveFlip   = primaryFlip == 0 or close > primaryFlip
+
+nearestCW = 0.0
+if gCallWall0 > 0 and gCallWall0 > close
+    nearestCW := gCallWall0
+if gCallWallW > 0 and gCallWallW > close and (nearestCW == 0 or gCallWallW < nearestCW)
+    nearestCW := gCallWallW
+if gCallWallM > 0 and gCallWallM > close and (nearestCW == 0 or gCallWallM < nearestCW)
+    nearestCW := gCallWallM
+
+nearestPW = 0.0
+if gPutWall0 > 0 and gPutWall0 < close
+    nearestPW := gPutWall0
+if gPutWallW > 0 and gPutWallW < close and (nearestPW == 0 or gPutWallW > nearestPW)
+    nearestPW := gPutWallW
+if gPutWallM > 0 and gPutWallM < close and (nearestPW == 0 or gPutWallM > nearestPW)
+    nearestPW := gPutWallM
+
+inZone = false
+if array.size(zCenter) > 0
+    for i = 0 to array.size(zCenter) - 1
+        zl = array.get(zLow, i)
+        zh = array.get(zHigh, i)
+        if low <= zh and high >= zl
+            inZone := true
+            break
+
+sessRange = na(sessHigh) or na(sessLow) ? 0.0 : sessHigh - sessLow
+rangePct  = na(dailyATR) or dailyATR == 0 ? 0.0 : sessRange / dailyATR
+
+longScore = 0
+string longBreakdown = ""
+if inZone
+    longScore := longScore + 2
+    longBreakdown := longBreakdown + "+zone "
+if aboveFlip and primaryFlip > 0
+    longScore := longScore + 2
+    longBreakdown := longBreakdown + "+flip "
+if not na(curVAL) and math.abs(close - curVAL) <= levelProx
+    longScore := longScore + 1
+    longBreakdown := longBreakdown + "+VAL "
+if nearestPW > 0 and math.abs(close - nearestPW) <= levelProx
+    longScore := longScore + 1
+    longBreakdown := longBreakdown + "+PW "
+if ibBrokeUpEver and ibDone
+    longScore := longScore + 1
+    longBreakdown := longBreakdown + "+IBup "
+if close > vwapVal
+    longScore := longScore + 1
+    longBreakdown := longBreakdown + "+VWAP "
+if rangePct < 0.7
+    longScore := longScore + 1
+    longBreakdown := longBreakdown + "+room "
+if longSweep or longWick or longPullback or failedBreakoutLong or climaxLong or compressionBreakLong
+    longScore := longScore + 1
+    longBreakdown := longBreakdown + "+trig "
+
+shortScore = 0
+string shortBreakdown = ""
+if inZone
+    shortScore := shortScore + 2
+    shortBreakdown := shortBreakdown + "+zone "
+if not aboveFlip and primaryFlip > 0
+    shortScore := shortScore + 2
+    shortBreakdown := shortBreakdown + "+below_flip "
+if not na(curVAH) and math.abs(close - curVAH) <= levelProx
+    shortScore := shortScore + 1
+    shortBreakdown := shortBreakdown + "+VAH "
+if nearestCW > 0 and math.abs(close - nearestCW) <= levelProx
+    shortScore := shortScore + 1
+    shortBreakdown := shortBreakdown + "+CW "
+if ibBrokeDownEver and ibDone
+    shortScore := shortScore + 1
+    shortBreakdown := shortBreakdown + "+IBdn "
+if close < vwapVal
+    shortScore := shortScore + 1
+    shortBreakdown := shortBreakdown + "+VWAP "
+if rangePct < 0.7
+    shortScore := shortScore + 1
+    shortBreakdown := shortBreakdown + "+room "
+if shortSweep or shortWick or shortPullback or failedBreakoutShort or climaxShort or compressionBreakShort
+    shortScore := shortScore + 1
+    shortBreakdown := shortBreakdown + "+trig "
+
+int  setupDir    = 0
+int  setupScore  = 0
+string setupReason = ""
+
+if longScore >= shortScore and longScore > 0
+    setupDir := 1
+    setupScore := longScore
+    setupReason := longBreakdown
+else if shortScore > longScore and shortScore > 0
+    setupDir := -1
+    setupScore := shortScore
+    setupReason := shortBreakdown
+
+setupScoreDisplay = math.min(setupScore, 10)
+
+// =========================== TRIGGER FIRES ===========================
+// Each trigger fires only when score AND its specific pattern condition are met
+sweepFireLong  = showTriggers and longSweep  and setupScore >= minScoreFire
+sweepFireShort = showTriggers and shortSweep and setupScore >= minScoreFire
+wickFireLong   = showTriggers and longWick   and setupScore >= minScoreFire
+wickFireShort  = showTriggers and shortWick  and setupScore >= minScoreFire
+trendFireLong  = showTriggers and longPullback  and setupScore >= minScoreFire
+trendFireShort = showTriggers and shortPullback and setupScore >= minScoreFire
+failFireLong   = showTriggers and failedBreakoutLong  and setupScore >= minScoreFire
+failFireShort  = showTriggers and failedBreakoutShort and setupScore >= minScoreFire
+climaxFireLong  = showTriggers and climaxLong  and setupScore >= minScoreFire
+climaxFireShort = showTriggers and climaxShort and setupScore >= minScoreFire
+compFireLong   = showTriggers and compressionBreakLong  and setupScore >= minScoreFire
+compFireShort  = showTriggers and compressionBreakShort and setupScore >= minScoreFire
+
+// Aggregate any-trigger-fired flag (used in alerts)
+anyLongFire = sweepFireLong or wickFireLong or trendFireLong or failFireLong or climaxFireLong or compFireLong
+anyShortFire = sweepFireShort or wickFireShort or trendFireShort or failFireShort or climaxFireShort or compFireShort
+
+// =========================== DRAW TRIGGERS ===========================
+// Sweep+Reclaim — Triangles
+plotshape(sweepFireLong,  "Sweep Long",  shape.triangleup,   location.belowbar, color=color.new(color.lime, 0), size=size.normal, text="SWP")
+plotshape(sweepFireShort, "Sweep Short", shape.triangledown, location.abovebar, color=color.new(color.red, 0),  size=size.normal, text="SWP")
+
+// Rejection Wick — Diamonds
+plotshape(wickFireLong,  "Wick Long",  shape.diamond, location.belowbar, color=color.new(color.aqua, 0),   size=size.small, text="REJ")
+plotshape(wickFireShort, "Wick Short", shape.diamond, location.abovebar, color=color.new(color.orange, 0), size=size.small, text="REJ")
+
+// Trend Pullback — Arrows
+plotshape(trendFireLong,  "Trend Long",  shape.arrowup,   location.belowbar, color=color.new(color.yellow, 0), size=size.small, text="TRND")
+plotshape(trendFireShort, "Trend Short", shape.arrowdown, location.abovebar, color=color.new(color.yellow, 0), size=size.small, text="TRND")
+
+// Failed Breakout — X cross (using xcross shape)
+plotshape(failFireLong,  "Failed BO Long",  shape.xcross, location.belowbar, color=color.new(color.fuchsia, 0), size=size.small, text="FBO")
+plotshape(failFireShort, "Failed BO Short", shape.xcross, location.abovebar, color=color.new(color.fuchsia, 0), size=size.small, text="FBO")
+
+// Volume Climax — Circles
+plotshape(climaxFireLong,  "Climax Long",  shape.circle, location.belowbar, color=color.new(color.white, 0), size=size.small, text="CLX")
+plotshape(climaxFireShort, "Climax Short", shape.circle, location.abovebar, color=color.new(color.white, 0), size=size.small, text="CLX")
+
+// Compression Break — Squares
+plotshape(compFireLong,  "Comp Long",  shape.square, location.belowbar, color=color.new(color.aqua, 0), size=size.small, text="COMP")
+plotshape(compFireShort, "Comp Short", shape.square, location.abovebar, color=color.new(color.aqua, 0), size=size.small, text="COMP")
+
+// Alerts
+if anyLongFire and showAlerts
+    string longTriggerName = sweepFireLong ? "SWEEP" : (wickFireLong ? "REJ_WICK" : (trendFireLong ? "TREND_PB" : (failFireLong ? "FAILED_BO" : (climaxFireLong ? "VOL_CLIMAX" : "COMPRESSION"))))
+    alert("NQ Ctx: LONG " + longTriggerName + " | Score " + str.tostring(setupScore) + " | " + setupReason, alert.freq_once_per_bar_close)
+if anyShortFire and showAlerts
+    string shortTriggerName = sweepFireShort ? "SWEEP" : (wickFireShort ? "REJ_WICK" : (trendFireShort ? "TREND_PB" : (failFireShort ? "FAILED_BO" : (climaxFireShort ? "VOL_CLIMAX" : "COMPRESSION"))))
+    alert("NQ Ctx: SHORT " + shortTriggerName + " | Score " + str.tostring(setupScore) + " | " + setupReason, alert.freq_once_per_bar_close)
+
+// =========================== GAMMA LABELS (with collision merging) ===========================
+if barstate.islast and showGammaLabels
+    while array.size(gammaLabels) > 0
+        label.delete(array.shift(gammaLabels))
+
+    array<float>  gPrices = array.new<float>()
+    array<string> gTypes  = array.new<string>()
+    array<string> gTFs    = array.new<string>()
+
+    if show0DTE and gFlip0 > 0
+        array.push(gPrices, gFlip0)
+        array.push(gTypes,  "FLIP")
+        array.push(gTFs,    "0")
+    if show0DTE and gCallWall0 > 0
+        array.push(gPrices, gCallWall0)
+        array.push(gTypes,  "CW")
+        array.push(gTFs,    "0")
+    if show0DTE and gPutWall0 > 0
+        array.push(gPrices, gPutWall0)
+        array.push(gTypes,  "PW")
+        array.push(gTFs,    "0")
+    if showWeekly and gFlipW > 0
+        array.push(gPrices, gFlipW)
+        array.push(gTypes,  "FLIP")
+        array.push(gTFs,    "W")
+    if showWeekly and gCallWallW > 0
+        array.push(gPrices, gCallWallW)
+        array.push(gTypes,  "CW")
+        array.push(gTFs,    "W")
+    if showWeekly and gPutWallW > 0
+        array.push(gPrices, gPutWallW)
+        array.push(gTypes,  "PW")
+        array.push(gTFs,    "W")
+    if showMonthly and gFlipM > 0
+        array.push(gPrices, gFlipM)
+        array.push(gTypes,  "FLIP")
+        array.push(gTFs,    "M")
+    if showMonthly and gCallWallM > 0
+        array.push(gPrices, gCallWallM)
+        array.push(gTypes,  "CW")
+        array.push(gTFs,    "M")
+    if showMonthly and gPutWallM > 0
+        array.push(gPrices, gPutWallM)
+        array.push(gTypes,  "PW")
+        array.push(gTFs,    "M")
+
+    nG = array.size(gPrices)
+
+    if nG > 1
+        for i = 0 to nG - 2
+            for j = 0 to nG - 2 - i
+                if array.get(gPrices, j) > array.get(gPrices, j + 1)
+                    p1 = array.get(gPrices, j)
+                    t1 = array.get(gTypes, j)
+                    f1 = array.get(gTFs, j)
+                    array.set(gPrices, j,     array.get(gPrices, j + 1))
+                    array.set(gTypes,  j,     array.get(gTypes,  j + 1))
+                    array.set(gTFs,    j,     array.get(gTFs,    j + 1))
+                    array.set(gPrices, j + 1, p1)
+                    array.set(gTypes,  j + 1, t1)
+                    array.set(gTFs,    j + 1, f1)
+
+    mergeThresh = atrVal * mergeThreshATR
+
+    if nG > 0
+        labelX2 = bar_index + 2
+        groupStart = 0
+
+        for i = 1 to nG
+            isLast = i == nG
+            currPrice = isLast ? -1.0 : array.get(gPrices, i)
+            startPrice = array.get(gPrices, groupStart)
+            shouldClose = isLast or (currPrice - startPrice > mergeThresh)
+
+            if shouldClose
+                groupEnd = i - 1
+                sumP = 0.0
+                cnt  = groupEnd - groupStart + 1
+                for k = groupStart to groupEnd
+                    sumP := sumP + array.get(gPrices, k)
+                avgP = sumP / cnt
+
+                hasODTE = false, hasWeekly = false, hasMonthly = false
+                hasFLIP = false, hasCW = false, hasPW = false
+
+                for k = groupStart to groupEnd
+                    tfk = array.get(gTFs, k)
+                    tk  = array.get(gTypes, k)
+                    if tfk == "0"
+                        hasODTE := true
+                    if tfk == "W"
+                        hasWeekly := true
+                    if tfk == "M"
+                        hasMonthly := true
+                    if tk == "FLIP"
+                        hasFLIP := true
+                    if tk == "CW"
+                        hasCW := true
+                    if tk == "PW"
+                        hasPW := true
+
+                string tfTags = ""
+                if hasODTE
+                    tfTags := "0"
+                if hasWeekly
+                    tfTags := tfTags + (tfTags == "" ? "W" : "+W")
+                if hasMonthly
+                    tfTags := tfTags + (tfTags == "" ? "M" : "+M")
+
+                typeCount = (hasFLIP ? 1 : 0) + (hasCW ? 1 : 0) + (hasPW ? 1 : 0)
+                string typeTag = ""
+                if typeCount > 1
+                    typeTag := "MIX"
+                else if hasFLIP
+                    typeTag := "FLIP"
+                else if hasCW
+                    typeTag := "CW"
+                else if hasPW
+                    typeTag := "PW"
+
+                color baseCol = color.gray
+                if hasFLIP and not hasCW and not hasPW
+                    baseCol := color.fuchsia
+                else if hasCW and not hasFLIP and not hasPW
+                    baseCol := color.red
+                else if hasPW and not hasFLIP and not hasCW
+                    baseCol := color.green
+                else
+                    baseCol := color.orange
+
+                int opacity = 70
+                if hasODTE
+                    opacity := 0
+                else if hasWeekly
+                    opacity := 40
+
+                string lblSize = size.tiny
+                if hasODTE
+                    lblSize := size.normal
+                else if hasWeekly
+                    lblSize := size.small
+
+                string lblText = typeTag + " " + str.tostring(avgP, "#.##") + " (" + tfTags + ")"
+
+                newLbl = label.new(labelX2, avgP, lblText,
+                     color=color.new(baseCol, opacity), textcolor=color.white,
+                     style=label.style_label_left, size=lblSize)
+                array.push(gammaLabels, newLbl)
+                groupStart := i
+
+// =========================== PDH/PDL/PDC LINES ===========================
+if barstate.islast and showPDHL
+    delLine(pdhLine)
+    delLine(pdlLine)
+    delLine(pdcLine)
+    delLbl(pdhLbl)
+    delLbl(pdlLbl)
+    delLbl(pdcLbl)
+
+    labelX6 = bar_index + 2
+
+    if not na(pdh)
+        pdhLine := line.new(bar_index - 200, pdh, bar_index, pdh,
+             color=color.new(color.white, 50), width=1, style=line.style_dotted, extend=extend.right)
+        pdhLbl := label.new(labelX6, pdh, "PDH " + str.tostring(pdh, "#.##"),
+             color=color.new(color.white, 70), textcolor=color.white, style=label.style_label_left, size=size.small)
+
+    if not na(pdl)
+        pdlLine := line.new(bar_index - 200, pdl, bar_index, pdl,
+             color=color.new(color.white, 50), width=1, style=line.style_dotted, extend=extend.right)
+        pdlLbl := label.new(labelX6, pdl, "PDL " + str.tostring(pdl, "#.##"),
+             color=color.new(color.white, 70), textcolor=color.white, style=label.style_label_left, size=size.small)
+
+    if not na(pdc)
+        pdcLine := line.new(bar_index - 200, pdc, bar_index, pdc,
+             color=color.new(color.silver, 40), width=1, style=line.style_dotted, extend=extend.right)
+        pdcLbl := label.new(labelX6, pdc, "PDC " + str.tostring(pdc, "#.##"),
+             color=color.new(color.silver, 60), textcolor=color.white, style=label.style_label_left, size=size.small)
+
+// =========================== IB + DAY TYPE ===========================
+if barstate.islast and showDayType
+    delLine(ibHighLine)
+    delLine(ibLowLine)
+    delLbl(ibHighLbl)
+    delLbl(ibLowLbl)
+    delLbl(dayTypeLbl)
+
+    if not na(ibHigh) and not na(ibLow)
+        ibHighLine := line.new(sessStartBar, ibHigh, bar_index, ibHigh,
+             color=color.new(color.orange, 30), width=1, style=line.style_dotted)
+        ibLowLine  := line.new(sessStartBar, ibLow, bar_index, ibLow,
+             color=color.new(color.orange, 30), width=1, style=line.style_dotted)
+        labelX4 = bar_index + 2
+        ibHighLbl := label.new(labelX4, ibHigh, "IB HI " + str.tostring(ibHigh, "#.##"),
+             color=color.new(color.orange, 30), textcolor=color.white, style=label.style_label_left, size=size.small)
+        ibLowLbl  := label.new(labelX4, ibLow, "IB LO " + str.tostring(ibLow, "#.##"),
+             color=color.new(color.orange, 30), textcolor=color.white, style=label.style_label_left, size=size.small)
+
+    if ibDone and not na(ibHigh) and not na(ibLow) and not na(ibAtOpenATR) and ibAtOpenATR > 0
+        ibRange = ibHigh - ibLow
+        ibRatio = ibRange / ibAtOpenATR
+        brokeUp   = ibBrokeUpEver
+        brokeDown = ibBrokeDownEver
+        brokeBoth = brokeUp and brokeDown
+
+        string dayType    = na
+        color  dayTypeCol = color.gray
+
+        if ibRatio < ibNarrowATR
+            if brokeBoth
+                dayType    := "ROTATION (Narrow IB)"
+                dayTypeCol := color.orange
+            else if brokeUp
+                dayType    := "TREND DAY UP"
+                dayTypeCol := color.lime
+            else if brokeDown
+                dayType    := "TREND DAY DOWN"
+                dayTypeCol := color.red
+            else
+                dayType    := "COILING — Narrow IB"
+                dayTypeCol := color.yellow
+        else if ibRatio > ibWideATR
+            dayType    := "WIDE IB — Range Likely"
+            dayTypeCol := color.aqua
+        else
+            if brokeBoth
+                dayType    := "DOUBLE DISTRIBUTION"
+                dayTypeCol := color.fuchsia
+            else if brokeUp
+                dayType    := "NORMAL VARIATION UP"
+                dayTypeCol := color.lime
+            else if brokeDown
+                dayType    := "NORMAL VARIATION DOWN"
+                dayTypeCol := color.red
+            else
+                dayType    := "BALANCED"
+                dayTypeCol := color.aqua
+
+        dayTypeLbl := label.new(bar_index, ibHigh + (ibRange * 0.15),
+             dayType + "\nIB " + str.tostring(ibRange, "#.#") + " pts (" +
+             str.tostring(ibRatio, "#.##") + "× ATR)",
+             color=color.new(dayTypeCol, 20), textcolor=color.black,
+             style=label.style_label_down, size=size.normal)
+
+// =========================== VISUALS ===========================
+plot(showVWAP ? vwapVal : na, "VWAP", color=color.new(color.yellow, 30), linewidth=1)
+
+plot(showGammaLines and show0DTE and gFlip0 > 0     ? gFlip0     : na, "0DTE Flip", color=color.fuchsia, linewidth=2, style=plot.style_circles)
+plot(showGammaLines and show0DTE and gCallWall0 > 0 ? gCallWall0 : na, "0DTE CW",   color=color.red, linewidth=2, style=plot.style_circles)
+plot(showGammaLines and show0DTE and gPutWall0 > 0  ? gPutWall0  : na, "0DTE PW",   color=color.green, linewidth=2, style=plot.style_circles)
+
+plot(showGammaLines and showWeekly and gFlipW > 0     ? gFlipW     : na, "WK Flip", color=color.new(color.fuchsia, 40), linewidth=1, style=plot.style_cross)
+plot(showGammaLines and showWeekly and gCallWallW > 0 ? gCallWallW : na, "WK CW",   color=color.new(color.red, 40), linewidth=1, style=plot.style_cross)
+plot(showGammaLines and showWeekly and gPutWallW > 0  ? gPutWallW  : na, "WK PW",   color=color.new(color.green, 40), linewidth=1, style=plot.style_cross)
+
+plot(showGammaLines and showMonthly and gFlipM > 0     ? gFlipM     : na, "MO Flip", color=color.new(color.fuchsia, 70), linewidth=1, style=plot.style_stepline)
+plot(showGammaLines and showMonthly and gCallWallM > 0 ? gCallWallM : na, "MO CW",   color=color.new(color.red, 70), linewidth=1, style=plot.style_stepline)
+plot(showGammaLines and showMonthly and gPutWallM > 0  ? gPutWallM  : na, "MO PW",   color=color.new(color.green, 70), linewidth=1, style=plot.style_stepline)
+
+// =========================== DIAGNOSTICS ===========================
+var table diag = table.new(position.top_right, 2, 14,
+     bgcolor=color.new(color.black, 70), border_width=1)
+
+if barstate.islast and showDiag
+    aboveFlipNow = primaryFlip == 0 or close > primaryFlip
+    flipSource = gFlip0 > 0 ? "0DTE" : (gFlipW > 0 ? "WK" : (gFlipM > 0 ? "MO" : ""))
+
+    hoursSinceUpdate = (timenow - gammaUpdatedDate) / (1000.0 * 60 * 60)
+    string gammaAgeText = na
+    color  gammaAgeCol  = color.gray
+    anyGammaSet = gFlip0 > 0 or gCallWall0 > 0 or gPutWall0 > 0 or gFlipW > 0 or gCallWallW > 0 or gPutWallW > 0 or gFlipM > 0 or gCallWallM > 0 or gPutWallM > 0
+    if not anyGammaSet
+        gammaAgeText := "NOT SET"
+    else if hoursSinceUpdate > gammaStaleHrs
+        gammaAgeText := "STALE " + str.tostring(hoursSinceUpdate, "#.#") + "h"
+        gammaAgeCol  := color.red
+    else if hoursSinceUpdate > gammaWarnHrs
+        gammaAgeText := "AGING " + str.tostring(hoursSinceUpdate, "#.#") + "h"
+        gammaAgeCol  := color.yellow
+    else
+        gammaAgeText := "FRESH " + str.tostring(hoursSinceUpdate, "#.#") + "h"
+        gammaAgeCol  := color.lime
+
+    string setupTxt = na
+    color  setupCol = color.gray
+    if setupDir == 0 or setupScore == 0
+        setupTxt := "—"
+    else
+        dirTag = setupDir == 1 ? "L" : "S"
+        setupTxt := dirTag + " " + str.tostring(setupScoreDisplay) + "/10"
+        if setupScore >= minScoreFire
+            setupCol := setupDir == 1 ? color.lime : color.red
+        else if setupScore >= minScoreFire - 2
+            setupCol := color.yellow
+        else
+            setupCol := color.gray
+
+    string sweepStatus = ""
+    if sweptVAH
+        sweepStatus := sweepStatus + "VAH "
+    if sweptPDH
+        sweepStatus := sweepStatus + "PDH "
+    if sweptIBH
+        sweepStatus := sweepStatus + "IBH "
+    if sweptVAL
+        sweepStatus := sweepStatus + "VAL "
+    if sweptPDL
+        sweepStatus := sweepStatus + "PDL "
+    if sweptIBL
+        sweepStatus := sweepStatus + "IBL "
+    if sweepStatus == ""
+        sweepStatus := "none"
+
+    // Active triggers this bar
+    string activeTrig = ""
+    if anyLongFire
+        activeTrig := "LONG: "
+        if sweepFireLong
+            activeTrig := activeTrig + "SWP "
+        if wickFireLong
+            activeTrig := activeTrig + "REJ "
+        if trendFireLong
+            activeTrig := activeTrig + "TRND "
+        if failFireLong
+            activeTrig := activeTrig + "FBO "
+        if climaxFireLong
+            activeTrig := activeTrig + "CLX "
+        if compFireLong
+            activeTrig := activeTrig + "COMP "
+    else if anyShortFire
+        activeTrig := "SHORT: "
+        if sweepFireShort
+            activeTrig := activeTrig + "SWP "
+        if wickFireShort
+            activeTrig := activeTrig + "REJ "
+        if trendFireShort
+            activeTrig := activeTrig + "TRND "
+        if failFireShort
+            activeTrig := activeTrig + "FBO "
+        if climaxFireShort
+            activeTrig := activeTrig + "CLX "
+        if compFireShort
+            activeTrig := activeTrig + "COMP "
+    else
+        activeTrig := "—"
+
+    table.cell(diag, 0, 0, "Setup", text_color=color.white, bgcolor=color.new(color.gray, 60))
+    table.cell(diag, 1, 0, setupTxt, text_color=setupCol)
+
+    table.cell(diag, 0, 1, "Why", text_color=color.white, bgcolor=color.new(color.gray, 60))
+    table.cell(diag, 1, 1, setupReason == "" ? "—" : setupReason, text_color=color.aqua)
+
+    table.cell(diag, 0, 2, "Trigger", text_color=color.white, bgcolor=color.new(color.gray, 60))
+    table.cell(diag, 1, 2, activeTrig, text_color=anyLongFire ? color.lime : (anyShortFire ? color.red : color.gray))
+
+    table.cell(diag, 0, 3, "Regime", text_color=color.white, bgcolor=color.new(color.gray, 60))
+    regimeTxt = primaryFlip == 0 ? "—" : ((aboveFlipNow ? "ABOVE" : "BELOW") + " (" + flipSource + ")")
+    table.cell(diag, 1, 3, regimeTxt, text_color=primaryFlip == 0 ? color.gray : (aboveFlipNow ? color.lime : color.red))
+
+    table.cell(diag, 0, 4, "Gamma", text_color=color.white, bgcolor=color.new(color.gray, 60))
+    table.cell(diag, 1, 4, gammaAgeText, text_color=gammaAgeCol)
+
+    table.cell(diag, 0, 5, "Near CW", text_color=color.white, bgcolor=color.new(color.gray, 60))
+    cwTxt = nearestCW > 0 ? str.tostring(nearestCW, "#.##") + " (+" + str.tostring(nearestCW - close, "#.#") + ")" : "—"
+    table.cell(diag, 1, 5, cwTxt, text_color=nearestCW > 0 ? color.red : color.gray)
+
+    table.cell(diag, 0, 6, "Near PW", text_color=color.white, bgcolor=color.new(color.gray, 60))
+    pwTxt = nearestPW > 0 ? str.tostring(nearestPW, "#.##") + " (" + str.tostring(nearestPW - close, "#.#") + ")" : "—"
+    table.cell(diag, 1, 6, pwTxt, text_color=nearestPW > 0 ? color.green : color.gray)
+
+    table.cell(diag, 0, 7, "Sweeps", text_color=color.white, bgcolor=color.new(color.gray, 60))
+    table.cell(diag, 1, 7, sweepStatus, text_color=color.aqua)
+
+    table.cell(diag, 0, 8, "VWAP", text_color=color.white, bgcolor=color.new(color.gray, 60))
+    table.cell(diag, 1, 8, close > vwapVal ? "ABOVE" : "BELOW", text_color=close > vwapVal ? color.lime : color.red)
+
+    table.cell(diag, 0, 9, "Range", text_color=color.white, bgcolor=color.new(color.gray, 60))
+    table.cell(diag, 1, 9, str.tostring(rangePct * 100, "#") + "%",
+         text_color=rangePct > 1.0 ? color.red : (rangePct > 0.7 ? color.yellow : color.aqua))
+
+    table.cell(diag, 0, 10, "Zones", text_color=color.white, bgcolor=color.new(color.gray, 60))
+    table.cell(diag, 1, 10, str.tostring(array.size(zCenter)), text_color=array.size(zCenter) > 0 ? color.aqua : color.gray)
+
+    table.cell(diag, 0, 11, "Ratio", text_color=color.white, bgcolor=color.new(color.gray, 60))
+    table.cell(diag, 1, 11, (autoRatio ? "AUTO " : "MAN ") + str.tostring(ratio, "#.##"), text_color=color.aqua)
+
+    table.cell(diag, 0, 12, "ATR", text_color=color.white, bgcolor=color.new(color.gray, 60))
+    table.cell(diag, 1, 12, str.tostring(atrVal, "#.#"), text_color=color.aqua)
+
+    table.cell(diag, 0, 13, "Session", text_color=color.white, bgcolor=color.new(color.gray, 60))
+    table.cell(diag, 1, 13, inRTH ? "RTH" : "OUT", text_color=inRTH ? color.lime : color.gray)
